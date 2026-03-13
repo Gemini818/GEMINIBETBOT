@@ -1,0 +1,35 @@
+name: Bot Calcio Auto
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+    - cron: '0 13 * * *'
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Install Libs
+        run: pip install -r requirements.txt
+      
+      - name: Run Bot
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python bot.py
+      
+      - name: Commit Results
+        run: |
+          git config --global user.name 'github-actions'
+          git config --global user.email 'github-actions@github.com'
+          git add risultati.json
+          git commit -m "Aggiorna risultati bot" || echo "Nessun cambiamento"
+          git push
