@@ -4,3 +4,4 @@ scipy
 requests
 python-telegram-bot
 lxml
+aiohttp
