@@ -25,11 +25,3 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python bot.py
-      
-      - name: Commit Results
-        run: |
-          git config --global user.name 'github-actions'
-          git config --global user.email 'github-actions@github.com'
-          git add risultati.json
-          git commit -m "Aggiorna risultati bot" || echo "Nessun cambiamento"
-          git push
