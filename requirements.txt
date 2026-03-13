@@ -1,3 +1,8 @@
-# bot-calcio-auto
-
-Descrizione del progetto
+# GEMINIBETBOT
+BOT PRONOSTICI OVER 
+pandas
+numpy
+scipy
+requests
+python-telegram-bot
+lxml
