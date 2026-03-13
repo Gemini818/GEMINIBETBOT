@@ -5,15 +5,14 @@ from scipy.stats import poisson
 from telegram import Bot
 import asyncio
 from datetime import datetime, timedelta
-import json
 import requests
-from bs4 import BeautifulSoup
 
 # CONFIGURAZIONE
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
+API_KEY = os.getenv('FOOTBALL_DATA_API_KEY')
 
-# URL DATI STORICI (per statistiche squadre)
+# DATI STORICI (per statistiche squadre)
 DATI_STORICI_URLS = {
     'Serie A': 'https://www.football-data.co.uk/mmz4281/2324/I1.csv',
     'Premier': 'https://www.football-data.co.uk/mmz4281/2324/E0.csv',
@@ -21,11 +20,33 @@ DATI_STORICI_URLS = {
     'Bundesliga': 'https://www.football-data.co.uk/mmz4281/2324/L1.csv'
 }
 
-# URL CALENDARIO (footapi.com - gratuito, no API key)
-CALENDARIO_URL = 'https://api.footapi.com/api/tournament/23/events'  # Serie A tournament ID
+# MAPPATURA NOMI SQUADRE (per compatibilità)
+MAPPA_SQUADRE = {
+    'AC Milan': 'Milan',
+    'Inter Milan': 'Inter',
+    'Juventus FC': 'Juventus',
+    'SSC Napoli': 'Napoli',
+    'AS Roma': 'Roma',
+    'SS Lazio': 'Lazio',
+    'Atalanta BC': 'Atalanta',
+    'ACF Fiorentina': 'Fiorentina',
+    'Torino FC': 'Torino',
+    'Bologna FC': 'Bologna',
+    'Genoa CFC': 'Genoa',
+    'UC Sampdoria': 'Sampdoria',
+    'Hellas Verona FC': 'Verona',
+    'Udinese Calcio': 'Udinese',
+    'US Sassuolo': 'Sassuolo',
+    'Empoli FC': 'Empoli',
+    'US Lecce': 'Lecce',
+    'Cagliari Calcio': 'Cagliari',
+    'Frosinone Calcio': 'Frosinone',
+    'AC Monza': 'Monza',
+    'US Salernitana': 'Salernitana'
+}
 
 def scarica_dati_storici():
-    """Scarica i CSV storici per le statistiche delle squadre"""
+    """Scarica CSV storici per statistiche"""
     all_df = []
     for lega, url in DATI_STORICI_URLS.items():
         try:
@@ -36,24 +57,23 @@ def scarica_dati_storici():
             all_df.append(df)
             print(f"✅ Scaricati dati per {lega}")
         except Exception as e:
-            print(f"❌ Errore download {lega}: {e}")
+            print(f"❌ Errore {lega}: {e}")
     
     if all_df:
         return pd.concat(all_df, ignore_index=True)
     return None
 
 def scarica_calendario_futuro():
-    """Scarica le partite future da giocare (prossimi 3 giorni)"""
+    """Scarica partite future da football-data.org API"""
     partite = []
     oggi = datetime.now()
+    futuro = oggi + timedelta(days=7)  # Prossimi 7 giorni
     
     try:
-        # Usiamo football-data.org API (gratis, no key per dati base)
-        url = "https://api.football-data.org/v4/competitions/SA/matches"
-        headers = {
-            'X-Auth-Token': 'f5e8c7d9a1b2c3d4e5f6a7b8c9d0e1f2'  # Token demo (limitato)
-        }
+        headers = {'X-Auth-Token': API_KEY}
         
+        # Serie A
+        url = 'https://api.football-data.org/v4/competitions/SA/matches'
         response = requests.get(url, headers=headers, timeout=10)
         
         if response.status_code == 200:
@@ -61,14 +81,10 @@ def scarica_calendario_futuro():
             for match in data.get('matches', []):
                 match_date = datetime.fromisoformat(match['utcDate'].replace('Z', '+00:00'))
                 
-                # Prendi solo partite dei prossimi 3 giorni
-                if oggi <= match_date <= oggi + timedelta(days=3):
-                    home = match['homeTeam']['name']
-                    away = match['awayTeam']['name']
-                    
-                    # Mappa nomi squadre per compatibilità con dati storici
-                    home = mappa_nome_squadra(home)
-                    away = mappa_nome_squadra(away)
+                # Filtra solo partite dei prossimi 7 giorni
+                if oggi <= match_date <= futuro:
+                    home = mappa_nome(match['homeTeam']['name'])
+                    away = mappa_nome(match['awayTeam']['name'])
                     
                     partite.append({
                         'home': home,
@@ -76,53 +92,82 @@ def scarica_calendario_futuro():
                         'data': match_date.strftime('%Y-%m-%d %H:%M'),
                         'lega': 'Serie A'
                     })
-                    print(f"✅ Trovata partita: {home} vs {away}")
-        else:
-            print(f"⚠️ API non disponibile, uso fallback")
-            # Fallback: partite predefinite (da aggiornare periodicamente)
-            partite = [
-                {'home': 'Atalanta', 'away': 'Fiorentina', 'data': oggi.strftime('%Y-%m-%d'), 'lega': 'Serie A'},
-                {'home': 'Milan', 'away': 'Inter', 'data': oggi.strftime('%Y-%m-%d'), 'lega': 'Serie A'},
-            ]
-            
+                    print(f"✅ Trovata: {home} vs {away}")
+        
+        # Premier League
+        url = 'https://api.football-data.org/v4/competitions/PL/matches'
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            for match in data.get('matches', []):
+                match_date = datetime.fromisoformat(match['utcDate'].replace('Z', '+00:00'))
+                
+                if oggi <= match_date <= futuro:
+                    home = mappa_nome(match['homeTeam']['name'])
+                    away = mappa_nome(match['awayTeam']['name'])
+                    
+                    partite.append({
+                        'home': home,
+                        'away': away,
+                        'data': match_date.strftime('%Y-%m-%d %H:%M'),
+                        'lega': 'Premier League'
+                    })
+                    print(f"✅ Trovata: {home} vs {away}")
+        
+        # La Liga
+        url = 'https://api.football-data.org/v4/competitions/PD/matches'
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            for match in data.get('matches', []):
+                match_date = datetime.fromisoformat(match['utcDate'].replace('Z', '+00:00'))
+                
+                if oggi <= match_date <= futuro:
+                    home = mappa_nome(match['homeTeam']['name'])
+                    away = mappa_nome(match['awayTeam']['name'])
+                    
+                    partite.append({
+                        'home': home,
+                        'away': away,
+                        'data': match_date.strftime('%Y-%m-%d %H:%M'),
+                        'lega': 'La Liga'
+                    })
+                    print(f"✅ Trovata: {home} vs {away}")
+        
+        # Bundesliga
+        url = 'https://api.football-data.org/v4/competitions/BL1/matches'
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            for match in data.get('matches', []):
+                match_date = datetime.fromisoformat(match['utcDate'].replace('Z', '+00:00'))
+                
+                if oggi <= match_date <= futuro:
+                    home = mappa_nome(match['homeTeam']['name'])
+                    away = mappa_nome(match['awayTeam']['name'])
+                    
+                    partite.append({
+                        'home': home,
+                        'away': away,
+                        'data': match_date.strftime('%Y-%m-%d %H:%M'),
+                        'lega': 'Bundesliga'
+                    })
+                    print(f"✅ Trovata: {home} vs {away}")
+                    
     except Exception as e:
         print(f"❌ Errore calendario: {e}")
-        # Fallback in caso di errore
-        partite = [
-            {'home': 'Juventus', 'away': 'Napoli', 'data': oggi.strftime('%Y-%m-%d'), 'lega': 'Serie A'},
-        ]
     
     return partite
 
-def mappa_nome_squadra(nome):
-    """Mappa i nomi delle squadre per compatibilità con football-data.co.uk"""
-    mappa = {
-        'AC Milan': 'Milan',
-        'Inter': 'Inter',
-        'Juventus': 'Juventus',
-        'Napoli': 'Napoli',
-        'AS Roma': 'Roma',
-        'Lazio': 'Lazio',
-        'Atalanta BC': 'Atalanta',
-        'ACF Fiorentina': 'Fiorentina',
-        'Torino FC': 'Torino',
-        'Bologna FC': 'Bologna',
-        'Genoa CFC': 'Genoa',
-        'UC Sampdoria': 'Sampdoria',
-        'Hellas Verona': 'Verona',
-        'Udinese Calcio': 'Udinese',
-        'US Sassuolo': 'Sassuolo',
-        'Empoli FC': 'Empoli',
-        'US Lecce': 'Lecce',
-        'Cagliari Calcio': 'Cagliari',
-        'Frosinone Calcio': 'Frosinone',
-        'Monza': 'Monza',
-        'Salernitana': 'Salernitana'
-    }
-    return mappa.get(nome, nome)
+def mappa_nome(nome_squadra):
+    """Converte nomi API in nomi compatibili con dati storici"""
+    return MAPPA_SQUADRE.get(nome_squadra, nome_squadra)
 
 def calcola_stats(df, squadra, n=10):
-    """Calcola media gol fatti e subiti nelle ultime N partite"""
+    """Calcola media gol fatti/subiti ultime N partite"""
     matches = df[(df['HomeTeam'] == squadra) | (df['AwayTeam'] == squadra)]
     matches = matches.sort_values('Date', ascending=False).head(n)
     
@@ -141,7 +186,7 @@ def calcola_stats(df, squadra, n=10):
     return {'mf': gf/len(matches), 'ms': gs/len(matches)}
 
 def analizza_partita(df_storico, home, away, lega):
-    """Analizza una singola partita e restituisce il pronostico"""
+    """Analizza una partita e restituisce pronostico"""
     stat_h = calcola_stats(df_storico, home)
     stat_a = calcola_stats(df_storico, away)
     
@@ -175,17 +220,17 @@ async def main():
     
     await bot.send_message(CHAT_ID, "🤖 **Bot avviato!** Analisi in corso...")
     
-    # 1. Scarica dati storici per le statistiche
+    # 1. Scarica dati storici
     df_storico = scarica_dati_storici()
     if df_storico is None:
         await bot.send_message(CHAT_ID, "❌ Errore download dati storici.")
         return
     
-    # 2. Scarica calendario partite future (AUTOMATICO!)
+    # 2. Scarica calendario futuro (AUTOMATICO!)
     partite_future = scarica_calendario_futuro()
     
     if not partite_future:
-        await bot.send_message(CHAT_ID, "⚠️ Nessuna partita trovata per i prossimi 3 giorni.")
+        await bot.send_message(CHAT_ID, "⚠️ Nessuna partita trovata per i prossimi 7 giorni.")
         return
     
     await bot.send_message(CHAT_ID, f"📅 **Trovate {len(partite_future)} partite da analizzare**")
@@ -198,7 +243,7 @@ async def main():
             risultato['data'] = p['data']
             segnali.append(risultato)
     
-    # 4. Invia i segnali su Telegram
+    # 4. Invia segnali su Telegram
     if segnali:
         msg = f"🔥 **{len(segnali)} SEGNALI TROVATI** 🔥\n\n"
         for s in segnali:
