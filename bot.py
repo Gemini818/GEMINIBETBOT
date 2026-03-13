@@ -6,15 +6,16 @@ from telegram import Bot
 import asyncio
 from datetime import datetime, timedelta
 import requests
+import math
 
 # ═══════════════════════════════════════════════════
-# CONFIGURAZIONE BOT - SISTEMA A CASCATA
+# CONFIGURAZIONE BOT
 # ═══════════════════════════════════════════════════
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 API_KEY = os.getenv('FOOTBALL_DATA_API_KEY')
 
-# SOGLIE MULTIPLE (sistema a cascata per garantire segnali)
+# SOGLIE MULTIPLE (sistema a cascata)
 SOGLIE = [
     {'nome': '⭐ PREMIUM', 'prob_15': 75, 'prob_25': 70, 'quota': 1.70},
     {'nome': '🟢 ALTA', 'prob_15': 70, 'prob_25': 65, 'quota': 1.65},
@@ -22,10 +23,10 @@ SOGLIE = [
     {'nome': '⚠️ BASE', 'prob_15': 60, 'prob_25': 55, 'quota': 1.55},
 ]
 
-MIN_SEGNALI_GIORNALIERI = 2  # Minimum segnali da trovare
+MIN_SEGNALI_GIORNALIERI = 2
 GIORNI_ANALISI = 3
 
-# DATI STORICI
+# DATI STORICI (URL PULITI SENZA SPAZI)
 DATI_STORICI_URLS = {
     'Serie A': 'https://www.football-data.co.uk/mmz4281/2324/I1.csv',
     'Premier': 'https://www.football-data.co.uk/mmz4281/2324/E0.csv',
@@ -49,7 +50,7 @@ COMPETIZIONI = [
     ('CDR', 'Copa del Rey', '🇪🇸🏆'), ('DFB', 'DFB Pokal', '🇩🇪🏆')
 ]
 
-# MAPPATURA NOMI SQUADRE
+# MAPPATURA NOMI SQUADRE (ESTESA)
 MAPPA_SQUADRE = {
     'AC Milan': 'Milan', 'Inter Milan': 'Inter', 'Juventus FC': 'Juventus',
     'SSC Napoli': 'Napoli', 'AS Roma': 'Roma', 'SS Lazio': 'Lazio',
@@ -96,6 +97,39 @@ MAPPA_SQUADRE = {
 }
 
 # ═══════════════════════════════════════════════════
+# FUNZIONI UTILI
+# ═══════════════════════════════════════════════════
+
+def rimuovi_fuso_orario(dt):
+    """Converte datetime aware in naive per confronti uniformi"""
+    if dt is None:
+        return None
+    if hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+def calcola_probabilita_multipla(segnali):
+    """Calcola la probabilità combinata di una multipla"""
+    if not segnali:
+        return 0.0
+    prob_totale = 1.0
+    for s in segnali:
+        # Estrai percentuale (es. "85.2%" -> 0.852)
+        p = float(s['probabilita'].replace('%', '')) / 100.0
+        prob_totale *= p
+    return prob_totale * 100
+
+def calcola_quota_multipla(segnali):
+    """Calcola la quota totale moltiplicando le singole"""
+    if not segnali:
+        return 0.0
+    quota_totale = 1.0
+    for s in segnali:
+        q = float(s['quota'])
+        quota_totale *= q
+    return quota_totale
+
+# ═══════════════════════════════════════════════════
 # FUNZIONI PRINCIPALI
 # ═══════════════════════════════════════════════════
 
@@ -104,9 +138,11 @@ def scarica_dati_storici():
     all_df = []
     for lega, url in DATI_STORICI_URLS.items():
         try:
-            df = pd.read_csv(url)
+            # URL pulito tramite .strip()
+            df = pd.read_csv(url.strip())
             df['Lega'] = lega
             df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
+            df['Date'] = df['Date'].apply(rimuovi_fuso_orario)
             df['Partita'] = df['HomeTeam'] + " vs " + df['AwayTeam']
             all_df.append(df)
             print(f"✅ Scaricati dati per {lega}")
@@ -131,6 +167,7 @@ def scarica_calendario_futuro():
     
     for comp_id, comp_nome, bandiera in COMPETIZIONI:
         try:
+            # URL corretto senza spazi
             url = f'https://api.football-data.org/v4/competitions/{comp_id}/matches'
             headers = {'X-Auth-Token': API_KEY}
             response = requests.get(url, headers=headers, timeout=15)
@@ -141,12 +178,12 @@ def scarica_calendario_futuro():
                 
                 for match in data.get('matches', []):
                     match_date = datetime.fromisoformat(match['utcDate'].replace('Z', '+00:00'))
+                    match_date = rimuovi_fuso_orario(match_date)
                     
                     if oggi <= match_date <= futuro:
                         home = MAPPA_SQUADRE.get(match['homeTeam']['name'], match['homeTeam']['name'])
                         away = MAPPA_SQUADRE.get(match['awayTeam']['name'], match['awayTeam']['name'])
                         
-                        # Recupero Quote (Odds) se disponibili
                         quota_over_25 = None
                         quota_over_15 = None
                         
@@ -203,7 +240,7 @@ def calcola_stats(df, squadra, n=10):
     return {'mf': gf/len(matches), 'ms': gs/len(matches)}
 
 def analizza_partita_cascata(df_storico, home, away, lega, quota_reale_25, quota_reale_15):
-    """Analizza partita con sistema a cascata - restituisce TUTTI i livelli validi"""
+    """Analizza partita con sistema a cascata"""
     stat_h = calcola_stats(df_storico, home)
     stat_a = calcola_stats(df_storico, away)
     
@@ -217,11 +254,9 @@ def analizza_partita_cascata(df_storico, home, away, lega, quota_reale_25, quota
     
     migliori_segnali = []
     
-    # Testa ogni livello di soglia (dal più alto al più basso)
     for soglia in SOGLIE:
         segnali_possibili = []
         
-        # Controllo Over 2.5
         if p25 > soglia['prob_25']:
             quota_usata = quota_reale_25 if quota_reale_25 else (100 / p25)
             if quota_usata >= soglia['quota']:
@@ -233,7 +268,6 @@ def analizza_partita_cascata(df_storico, home, away, lega, quota_reale_25, quota
                     'livello': soglia['nome']
                 })
         
-        # Controllo Over 1.5
         if p15 > soglia['prob_15']:
             quota_usata = quota_reale_15 if quota_reale_15 else (100 / p15)
             if quota_usata >= soglia['quota']:
@@ -246,10 +280,9 @@ def analizza_partita_cascata(df_storico, home, away, lega, quota_reale_25, quota
                 })
         
         if segnali_possibili:
-            # Prendi il migliore di questo livello
             best = max(segnali_possibili, key=lambda x: x['probabilita'])
             migliori_segnali.append(best)
-            break  # Fermati al primo livello valido (il più alto)
+            break
     
     if migliori_segnali:
         best = migliori_segnali[0]
@@ -285,7 +318,6 @@ async def main():
     # 2. Scarica calendario futuro
     partite_future, errori = scarica_calendario_futuro()
     
-    # Invia eventuali errori
     if errori:
         msg_errori = "⚠️ **Report Errori:**\n\n" + "\n".join(errori[:5])
         await bot.send_message(CHAT_ID, msg_errori)
@@ -296,7 +328,7 @@ async def main():
     
     await bot.send_message(CHAT_ID, f"📅 **{len(partite_future)} partite da analizzare**")
     
-    # 3. Analizza ogni partita con sistema a cascata
+    # 3. Analizza ogni partita
     tutti_segnali = []
     
     for p in partite_future:
@@ -308,18 +340,71 @@ async def main():
             risultato['data'] = p['data']
             tutti_segnali.append(risultato)
     
-    # 4. Ordina per livello (PREMIUM prima) e probabilità
+    # 4. Ordina per livello e probabilità
     ordine_livelli = {'⭐ PREMIUM': 0, '🟢 ALTA': 1, '📊 STANDARD': 2, '⚠️ BASE': 3}
     tutti_segnali.sort(key=lambda x: (ordine_livelli.get(x['livello'], 99), -float(x['probabilita'].replace('%', ''))))
     
-    # 5. Seleziona i migliori segnali (minimo MIN_SEGNALI_GIORNALIERI)
+    # 5. Seleziona i migliori segnali singoli
     segnali_finali = tutti_segnali[:max(MIN_SEGNALI_GIORNALIERI, len(tutti_segnali))]
     
-    # 6. Invia segnali su Telegram
-    if segnali_finali:
-        msg = f"🔥 **{len(segnali_finali)} SEGNALI SELEZIONATI** 🔥\n\n"
+    # 6. CALCOLO MULTIPLA SICURA (>80%)
+    multipla_sicura = None
+    if len(tutti_segnali) >= 2:
+        # Prova a creare una multipla da 2 eventi con i segnali più sicuri
+        candidati = tutti_segnali[:5] # Prendi i top 5
+        for i in range(len(candidati)):
+            for j in range(i + 1, len(candidati)):
+                combo = [candidati[i], candidati[j]]
+                prob_combo = calcola_probabilita_multipla(combo)
+                
+                # Se la probabilità combinata è > 80%, è una multipla sicura
+                if prob_combo > 80.0:
+                    multipla_sicura = {
+                        'eventi': combo,
+                        'probabilita': prob_combo,
+                        'quota_totale': calcola_quota_multipla(combo)
+                    }
+                    break
+            if multipla_sicura:
+                break
         
-        # Raggruppa per livello
+        # Se nessuna da 2 supera l'80%, prova con singole molto alte se esistono
+        if not multipla_sicura and len(candidati) > 0:
+             # Fallback: se il singolo migliore è > 85% lo proponiamo come "Super Singola"
+             if float(candidati[0]['probabilita'].replace('%','')) > 85:
+                 multipla_sicura = {
+                    'eventi': [candidati[0]],
+                    'probabilita': float(candidati[0]['probabilita'].replace('%','')),
+                    'quota_totale': float(candidati[0]['quota'])
+                 }
+
+    # 7. Invia segnali su Telegram
+    messaggio_inviato = False
+    
+    # Invio Multipla Sicura (Priorità Massima)
+    if multipla_sicura:
+        eventi = multipla_sicura['eventi']
+        msg = f"🔒 **MULTIPLA SICURA (>80%)** 🔒\n\n"
+        msg += f"📈 **Probabilità Uscita: {multipla_sicura['probabilita']:.1f}%**\n"
+        msg += f"💰 **Quota Totale: {multipla_sicura['quota_totale']:.2f}**\n\n"
+        
+        for idx, ev in enumerate(eventi, 1):
+            msg += f"{idx}️⃣⃣ ⚽ {ev['partita']}\n"
+            msg += f"   🎯 {ev['mercato']} ({ev['probabilita']})\n"
+            msg += f"   💵 Quota: {ev['quota']}\n"
+            msg += f"   🏆 {ev['lega']}\n\n"
+        
+        msg += f"⚠️ *Gioca responsabilmente. Anche l'80% può perdere.*"
+        await bot.send_message(CHAT_ID, msg, parse_mode='Markdown')
+        messaggio_inviato = True
+
+    # Invio Segnali Singoli
+    if segnali_finali:
+        if messaggio_inviato:
+            await asyncio.sleep(2) # Pausa tra i messaggi
+            
+        msg = f"🔥 **{len(segnali_finali)} SEGNALI SINGOLI** 🔥\n\n"
+        
         segnali_per_livello = {}
         for s in segnali_finali:
             livello = s['livello']
@@ -341,9 +426,9 @@ async def main():
 ⚡ Gol Att: {s['gol_attesi']}
 ──────────────────\n"""
         
-        msg += f"\n⚠️ *Gioca responsabilmente. I segnali PREMIUM hanno maggiore affidabilità.*"
+        msg += f"\n⚠️ *Gioca responsabilmente.*"
         await bot.send_message(CHAT_ID, msg, parse_mode='Markdown')
-    else:
+    elif not messaggio_inviato:
         await bot.send_message(CHAT_ID, f"ℹ️ Nessun segnale valido trovato tra {len(partite_future)} partite analizzate.")
     
     await bot.send_message(CHAT_ID, "✅ **Analisi completata!**")
